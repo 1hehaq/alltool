@@ -1,1 +1,45 @@
-
+{
+  "subdomain_enumeration": {
+    "tools": {
+      "subfinder": {
+        "command": "subfinder",
+        "default_args": ["-silent"]
+      },
+      "amass": {
+        "command": "amass",
+        "default_args": ["enum", "-passive"]
+      },
+      "assetfinder": {
+        "command": "assetfinder",
+        "default_args": []
+      }
+    },
+    "default_tool": "subfinder"
+  },
+  "port_scanning": {
+    "tools": {
+      "nmap": {
+        "command": "nmap",
+        "default_args": ["-sV", "-sC"]
+      },
+      "masscan": {
+        "command": "masscan",
+        "default_args": ["-p0-65535", "--rate=1000"]
+      }
+    },
+    "default_tool": "nmap"
+  },
+  "vulnerability_scanning": {
+    "tools": {
+      "nuclei": {
+        "command": "nuclei",
+        "default_args": ["-severity", "medium,high,critical"]
+      },
+      "nessus": {
+        "command": "nessus_cli",
+        "default_args": ["--scan-type", "basic"]
+      }
+    },
+    "default_tool": "nuclei"
+  }
+}
