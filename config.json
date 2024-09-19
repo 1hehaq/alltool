@@ -1,0 +1,40 @@
+{
+  "subdomain_enum": {
+    "subfinder": ["subfinder", "-d", "{target}", "-silent"],
+    "assetfinder": ["assetfinder", "--subs-only", "{target}"],
+    "oneliners": [
+      "curl -s \"https://rapiddns.io/subdomain/{target}?full=1#result\" | grep \"<td><a\" | cut -d '\"' -f 2 | grep http | cut -d '/' -f3 | sed 's/#results//g' | sort -u",
+      "curl -s https://dns.bufferover.run/dns?q=.{target} | jq -r '.FDNS_A[]' | cut -d',' -f2 | sort -u",
+      "curl -s \"https://riddler.io/search/exportcsv?q=pld:{target}\" | grep -Po '([\\w.-]+\\.{target})' | sort -u",
+      "curl -s \"https://www.virustotal.com/ui/domains/{target}/subdomains?limit=40\" | jq -r '.data[].id' | sort -u",
+      "curl -s \"https://certspotter.com/api/v1/issuances?domain={target}&include_subdomains=true&expand=dns_names\" | jq -r '.[].dns_names[]' | sed 's/\\*\\.//g' | sort -u",
+      "curl -s \"https://jldc.me/anubis/subdomains/{target}\" | jq -r '.[]' | sort -u",
+      "curl -s \"https://securitytrails.com/list/apex_domain/{target}\" | grep -Po '([\\w.-]+\\.{target})' | sort -u",
+      "curl --silent https://sonar.omnisint.io/subdomains/{target} | jq -r '.[]' | sort -u",
+      "curl --silent -X POST https://synapsint.com/report.php -d \"name=https%3A%2F%2F{target}\" | grep -oE '[a-zA-Z0-9._-]+\\.{target}' | sort -u",
+      "curl -s \"https://crt.sh/?q=%25.{target}&output=json\" | jq -r '.[].name_value' | sed 's/\\*\\.//g' | sort -u"
+    ]
+  },
+  "port_scan": {
+    "nmap": ["nmap", "-p-", "--min-rate=1000", "-T4", "{target}"],
+    "masscan": ["masscan", "-p1-65535", "--rate=1000", "{target}"]
+  },
+  "probe": {
+    "httpx": ["httpx", "-silent"],
+    "httprobe": ["httprobe"]
+  },
+  "vuln_scan": {
+    "xss": {
+      "nuclei": ["nuclei", "-t", "xss.yaml", "-target", "{target}"],
+      "dalfox": ["dalfox", "url", "{target}"]
+    },
+    "sqli": {
+      "sqlmap": ["sqlmap", "-u", "{target}", "--batch", "--random-agent"],
+      "nuclei": ["nuclei", "-t", "sqli.yaml", "-target", "{target}"]
+    },
+    "all": {
+      "nuclei": ["nuclei", "-t", "/path/to/nuclei-templates", "-target", "{target}"],
+      "nmap": ["nmap", "-sV", "-sC", "--script", "vuln", "{target}"]
+    }
+  }
+}
