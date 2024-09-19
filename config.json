@@ -1,0 +1,14 @@
+{
+  "nmap": {
+    "command": "nmap",
+    "default_args": ["-v"]
+  },
+  "dirb": {
+    "command": "dirb",
+    "default_args": []
+  },
+  "sqlmap": {
+    "command": "sqlmap",
+    "default_args": ["--batch"]
+  }
+}
