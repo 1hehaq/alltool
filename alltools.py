@@ -15,6 +15,8 @@ from halo import Halo
 import pyfiglet
 import textwrap
 import random
+import sys
+import traceback
 
 # Initialize colorama for cross-platform color support
 init(autoreset=True)
@@ -36,8 +38,9 @@ class ColoredFormatter(logging.Formatter):
         log_message = super().format(record)
         return f"{self.COLORS.get(record.levelname, '')}{log_message}{Style.RESET_ALL}"
 
-# Remove default handlers to prevent double logging
-logger.handlers = []
+# Remove all handlers associated with the root logger object
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
 
 # Add our custom handler
 handler = logging.StreamHandler()
@@ -136,36 +139,78 @@ def print_banner():
     banner = pyfiglet.figlet_format("alltools", font="slant")
     gradient_print(banner, (0, 255, 255), (255, 0, 255))
     
-    print(f"{Fore.LIGHTGREEN_EX}All-in-One security scanning tool Created by - {Style.RESET_ALL} "
-      f"\033]8;;https://github.com/1hehaq\033\\{Fore.LIGHTGREEN_EX}@1hehaq\033]8;;\033\\ {Style.RESET_ALL}\n")
+    logger.info(f"{Fore.LIGHTGREEN_EX}All-in-One security scanning tool Created by - {Style.RESET_ALL} "
+                f"\033]8;;https://github.com/1hehaq\033\\{Fore.LIGHTGREEN_EX}@1hehaq\033]8;;\033\\ {Style.RESET_ALL}")
 
     tip = random.choice(TIPS)
     wrapped_tip = textwrap.wrap(tip, width=60)
     max_length = max(len(line) for line in wrapped_tip)
     
-    print(f"{Fore.YELLOW}┌─ Tip of the Day {'─' * (max_length - 14)}┐{Style.RESET_ALL}")
+    logger.info(f"{Fore.YELLOW}┌─ Tip of the Day {'─' * (max_length - 14)}┐{Style.RESET_ALL}")
     for line in wrapped_tip:
-        print(f"{Fore.YELLOW}│ {Fore.CYAN}{line:<{max_length}} {Fore.YELLOW}│{Style.RESET_ALL}")
-    print(f"{Fore.YELLOW}└{'─' * (max_length + 2)}┘{Style.RESET_ALL}\n")
+        logger.info(f"{Fore.YELLOW}│ {Fore.CYAN}{line:<{max_length}} {Fore.YELLOW}│{Style.RESET_ALL}")
+    logger.info(f"{Fore.YELLOW}└{'─' * (max_length + 2)}┘{Style.RESET_ALL}")
 
 def print_completion_banner(results):
-    completion_banner = pyfiglet.figlet_format("Scan Complete!", font="small")
-    print(f"\n{Fore.GREEN}{completion_banner}{Style.RESET_ALL}")
-    print(f"{Fore.YELLOW}Summary of findings:{Style.RESET_ALL}")
+    # completion_banner = pyfiglet.figlet_format("Scan Complete!", font="small")
+    # logger.info(f"\n{Fore.GREEN}{completion_banner}{Style.RESET_ALL}")
+    logger.info(f"{Fore.YELLOW}Summary of findings:{Style.RESET_ALL}")
     for key, value in results.items():
         if isinstance(value, list):
-            print(f"{Fore.CYAN}{key.capitalize()}: {Fore.WHITE}{len(value)} found")
+            logger.info(f"{Fore.CYAN}{key.capitalize()}: {Fore.WHITE}{len(value)} found")
         elif isinstance(value, dict):
-            print(f"{Fore.CYAN}{key.capitalize()}:")
+            logger.info(f"{Fore.CYAN}{key.capitalize()}:")
             for subkey, subvalue in value.items():
-                print(f"  {Fore.LIGHTCYAN_EX}{subkey}: {Fore.WHITE}{len(subvalue) if isinstance(subvalue, list) else subvalue} found")
-    print(f"\n{Fore.YELLOW}Detailed results are stored in the 'results' attribute of the scanner object.{Style.RESET_ALL}")
+                logger.info(f"  {Fore.LIGHTCYAN_EX}{subkey}: {Fore.WHITE}{len(subvalue) if isinstance(subvalue, list) else subvalue} found")
+    logger.info(f"\n{Fore.YELLOW}Detailed results are stored in the 'results' attribute of the scanner object.{Style.RESET_ALL}")
 
+# Custom Exceptions
+class AllToolsError(Exception):
+    """Base exception for AllTools"""
+    pass
+
+class ConfigurationError(AllToolsError):
+    """Raised when there's an issue with the configuration"""
+    pass
+
+class ToolExecutionError(AllToolsError):
+    """Raised when a tool fails to execute properly"""
+    pass
+
+class InputError(AllToolsError):
+    """Raised when there's an issue with user input"""
+    pass
+
+# Global Error Handler
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+
+    logger.error("An unexpected error occurred:", exc_info=(exc_type, exc_value, exc_traceback))
+    logger.error(f"\n{Fore.RED}An unexpected error occurred. Please check the log file for details.{Style.RESET_ALL}")
+
+sys.excepthook = global_exception_handler
+
+from halo import Halo
+import sys
+
+class NonInterferenceSpinner(Halo):
+    def start(self, text=None):
+        if sys.stdout.isatty():
+            super().start(text)
+
+    def stop(self):
+        if sys.stdout.isatty():
+            super().stop()
+
+spinner = NonInterferenceSpinner(spinner='dots')
+
+# Enhance the SecurityScanner class
 class SecurityScanner:
     def __init__(self, config_file: str = 'config.json'):
         self.config = self.load_config(config_file)
         self.results: Dict[str, Any] = {}
-        self.spinner = Halo(spinner='dots')
 
     def load_config(self, config_file: str) -> Dict[str, Any]:
         try:
@@ -174,18 +219,15 @@ class SecurityScanner:
             self.validate_config(config)
             return config
         except FileNotFoundError:
-            logger.error(f"Config file '{config_file}' not found.")
-            sys.exit(1)
+            raise ConfigurationError(f"Config file '{config_file}' not found.")
         except json.JSONDecodeError:
-            logger.error(f"Invalid JSON in config file '{config_file}'.")
-            sys.exit(1)
+            raise ConfigurationError(f"Invalid JSON in config file '{config_file}'.")
 
     def validate_config(self, config: Dict[str, Any]) -> None:
         required_keys = ['subdomain_enum', 'port_scan', 'probe', 'vuln_scan']
         for key in required_keys:
             if key not in config:
-                logger.error(f"Missing required key '{key}' in config.")
-                sys.exit(1)
+                raise ConfigurationError(f"Missing required key '{key}' in config.")
 
     def run_command(self, command: List[str], silent: bool = False) -> str:
         try:
@@ -195,19 +237,16 @@ class SecurityScanner:
                 result = subprocess.run(command, text=True, check=True)
             return result.stdout
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error running command {' '.join(command)}: {e}")
-            return e.stderr
+            raise ToolExecutionError(f"Error running command {' '.join(command)}: {e}")
 
     def run_tool(self, tool, command, target):
         try:
             if tool == "oneliners":
-                # Handle oneliners differently
                 formatted_command = command.format(target=target)
                 output = subprocess.run(formatted_command, shell=True, capture_output=True, text=True, check=True)
             else:
-                # Check if the tool is available
                 if not shutil.which(command[0]):
-                    return tool, target, set(), f"Tool '{command[0]}' not found. Please install it or add it to your PATH."
+                    raise ToolExecutionError(f"Tool '{command[0]}' not found. Please install it or add it to your PATH.")
 
                 formatted_command = [arg.format(target=target) for arg in command]
                 output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
@@ -215,10 +254,11 @@ class SecurityScanner:
             subdomains = set(line.strip() for line in output.stdout.splitlines() if line.strip())
             return tool, target, subdomains, None
         except subprocess.CalledProcessError as e:
-            return tool, target, set(), f"Command '{formatted_command if isinstance(formatted_command, str) else ' '.join(formatted_command)}' returned non-zero exit status {e.returncode}."
+            error_msg = f"Command '{formatted_command if isinstance(formatted_command, str) else ' '.join(formatted_command)}' returned non-zero exit status {e.returncode}."
+            raise ToolExecutionError(error_msg)
 
     def subdomain_enumeration(self, targets: List[str], args: argparse.Namespace) -> None:
-        self.spinner.start(f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}")
+        spinner.start(f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}")
         all_subdomains = set()
 
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -236,18 +276,18 @@ class SecurityScanner:
             for future in as_completed(futures):
                 tool, target, subdomains, error = future.result()
                 if error:
-                    self.spinner.fail(f"{Fore.LIGHTRED_EX}Error running {tool} for {target}: {error}{Style.RESET_ALL}")
+                    spinner.fail(f"{Fore.LIGHTRED_EX}Error running {tool} for {target}: {error}{Style.RESET_ALL}")
                     continue
                 
                 all_subdomains.update(subdomains)
                 
-                self.spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(subdomains)} subdomains for {target}{Style.RESET_ALL}")
+                spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(subdomains)} subdomains for {target}{Style.RESET_ALL}")
                 for subdomain in subdomains:
                     logger.info(f"  {Fore.LIGHTYELLOW_EX}{subdomain}{Style.RESET_ALL}")
                 
-                self.spinner.start(f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}")
+                spinner.start(f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}")
 
-        self.spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total unique subdomains found: {len(all_subdomains)}{Style.RESET_ALL}")
+        spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total unique subdomains found: {len(all_subdomains)}{Style.RESET_ALL}")
         self.results['subdomains'] = list(all_subdomains)
 
         if args.output:
@@ -255,14 +295,14 @@ class SecurityScanner:
                 for subdomain in all_subdomains:
                     f.write(f"{subdomain}\n")
             logger.info(f"{self.get_timestamp()} Subdomains saved to {args.output}")
-        print(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
-        self.spinner.succeed(f"{Fore.GREEN}Subdomain Enumeration Complete{Style.RESET_ALL}")
+        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
+        spinner.succeed(f"{Fore.GREEN}Subdomain Enumeration Complete{Style.RESET_ALL}")
 
     def get_timestamp(self) -> str:
         return f"{Fore.LIGHTMAGENTA_EX}[{time.strftime('%H:%M:%S')}]{Style.RESET_ALL}"
 
     def port_scanning(self, targets: List[str], args: argparse.Namespace) -> None:
-        self.spinner.start(f"{Fore.CYAN}Performing Port Scanning{Style.RESET_ALL}")
+        logger.info(f"{Fore.CYAN}Performing Port Scanning{Style.RESET_ALL}")
         logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting port scanning...{Style.RESET_ALL}")
         open_ports = {}
 
@@ -272,8 +312,12 @@ class SecurityScanner:
                 if args.exclude and tool in args.exclude:
                     continue
                 logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}Running {tool} for {target}{Style.RESET_ALL}")
+                
+                spinner.start(f"Running {tool}")
                 formatted_command = [arg.format(target=target) for arg in command]
                 output = self.run_command(formatted_command, silent=True)
+                spinner.stop()
+                
                 ports = self.parse_port_scan_output(tool, output)
                 open_ports[target].extend(ports)
                 
@@ -291,7 +335,7 @@ class SecurityScanner:
                         f.write(f"  {port}\n")
             logger.info(f"{self.get_timestamp()} Open ports saved to {args.output}")
 
-        self.spinner.succeed(f"{Fore.GREEN}Port Scanning Complete{Style.RESET_ALL}")
+        logger.info(f"{Fore.GREEN}Port Scanning Complete{Style.RESET_ALL}")
 
     def parse_port_scan_output(self, tool: str, output: str) -> List[int]:
         # Implement parsing logic for different tools
@@ -305,7 +349,7 @@ class SecurityScanner:
         return ports
 
     def probe_alive_domains(self, targets: List[str], args: argparse.Namespace) -> None:
-        self.spinner.start(f"{Fore.CYAN}Probing for Alive Domains{Style.RESET_ALL}")
+        spinner.start(f"{Fore.CYAN}Probing for Alive Domains{Style.RESET_ALL}")
         logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Probing for alive domains...{Style.RESET_ALL}")
         alive_domains = set()
 
@@ -331,10 +375,10 @@ class SecurityScanner:
                     f.write(f"{domain}\n")
             logger.info(f"{self.get_timestamp()} Alive domains saved to {args.output}")
 
-        self.spinner.succeed(f"{Fore.GREEN}Probing Complete{Style.RESET_ALL}")
+        spinner.succeed(f"{Fore.GREEN}Probing Complete{Style.RESET_ALL}")
 
     def vulnerability_scanning(self, targets: List[str], args: argparse.Namespace) -> None:
-        self.spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
+        spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
         logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting vulnerability scanning...{Style.RESET_ALL}")
         vulnerabilities = {}
 
@@ -349,22 +393,22 @@ class SecurityScanner:
                     logger.warning(f"{self.get_timestamp()} {Fore.LIGHTYELLOW_EX}Unknown vulnerability type: {vuln_type}{Style.RESET_ALL}")
                     continue
 
-                self.spinner.text = f"Scanning for {vuln_type} vulnerabilities on {target}"
+                spinner.text = f"Scanning for {vuln_type} vulnerabilities on {target}"
                 for tool, command in self.config['vuln_scan'][vuln_type].items():
                     if args.exclude and tool in args.exclude:
                         continue
                     if args.tool and tool not in args.tool:
                         continue
-                    self.spinner.text = f"Running {tool} for {vuln_type} on {target}"
+                    spinner.text = f"Running {tool} for {vuln_type} on {target}"
                     formatted_command = [arg.format(target=target) for arg in command]
                     output = self.run_command(formatted_command, silent=True)
                     vulns = self.parse_vulnerability_output(tool, output)
                     vulnerabilities[target][vuln_type] = vulns
                     
-                    self.spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(vulns)} {vuln_type} vulnerabilities on {target}{Style.RESET_ALL}")
+                    spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(vulns)} {vuln_type} vulnerabilities on {target}{Style.RESET_ALL}")
                     for vuln in vulns:
                         logger.info(f"  {Fore.LIGHTYELLOW_EX}{vuln['description']}{Style.RESET_ALL}")
-                    self.spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
+                    spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
 
                 if args.isolate:
                     break
@@ -376,7 +420,7 @@ class SecurityScanner:
                 json.dump(vulnerabilities, f, indent=2)
             logger.info(f"{self.get_timestamp()} Vulnerabilities saved to {args.output}")
 
-        self.spinner.succeed(f"{Fore.GREEN}Vulnerability Scanning Complete{Style.RESET_ALL}")
+        spinner.succeed(f"{Fore.GREEN}Vulnerability Scanning Complete{Style.RESET_ALL}")
 
     def parse_vulnerability_output(self, tool: str, output: str) -> List[Dict[str, str]]:
         # Implement parsing logic for different vulnerability scanning tools
@@ -398,32 +442,49 @@ def main():
 
     print_banner()
 
-    scanner = SecurityScanner()
-
-    targets = []
-    if os.path.isfile(args.target):
-        with open(args.target, 'r') as f:
-            targets = [line.strip() for line in f if line.strip()]
-    else:
-        targets = [args.target]
-
     try:
+        scanner = SecurityScanner()
+
+        if not args.command:
+            parser.print_help()
+            return
+
+        targets = []
+        if hasattr(args, 'target'):
+            if os.path.isfile(args.target):
+                with open(args.target, 'r') as f:
+                    targets = [line.strip() for line in f if line.strip()]
+            else:
+                targets = [args.target]
+
+        scan_performed = False
         if args.command == 'subenum':
             scanner.subdomain_enumeration(targets, args)
+            scan_performed = True
         elif args.command == 'portscan':
             scanner.port_scanning(targets, args)
+            scan_performed = True
         elif args.command == 'probe':
             scanner.probe_alive_domains(targets, args)
+            scan_performed = True
         elif args.command == 'vulnscan':
             scanner.vulnerability_scanning(targets, args)
-        else:
-            parser.print_help()
+            scan_performed = True
+
+        if scan_performed:
+            print_completion_banner(scanner.results)
+
+    except AllToolsError as e:
+        logger.error(f"{type(e).__name__}: {str(e)}")
     except KeyboardInterrupt:
-        scanner.spinner.fail(f"{Fore.YELLOW}Scan interrupted by user. Exiting...{Style.RESET_ALL}")
+        spinner.stop()
+        logger.warning("\nScan interrupted by user. Exiting...")
     except Exception as e:
-        scanner.spinner.fail(f"{Fore.RED}An unexpected error occurred: {e}{Style.RESET_ALL}")
+        spinner.stop()
+        logger.error(f"An unexpected error occurred: {str(e)}")
+        logger.debug("", exc_info=True)
     finally:
-        print_completion_banner(scanner.results)
+        spinner.stop()
 
 if __name__ == "__main__":
     main()
