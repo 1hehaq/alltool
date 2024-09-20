@@ -28,6 +28,18 @@ import json
 import requests
 from packaging import version
 from halo import Halo
+import signal
+import threading
+import sys
+
+# Global flag to signal threads to stop
+stop_scan = threading.Event()
+
+def signal_handler(signum, frame):
+    if not stop_scan.is_set():
+        stop_scan.set()
+        print(f"\n{Fore.YELLOW}Scan interrupted by user. Cleaning up...{Style.RESET_ALL}")
+        sys.exit(0)
 
 # Initialize colorama for cross-platform color support
 init(autoreset=True)
@@ -289,8 +301,13 @@ def print_banner():
     banner = pyfiglet.figlet_format("alltools", font="slant")
     gradient_print(banner, (0, 255, 255), (255, 0, 255))
     
-    logger.info(f"{Fore.LIGHTGREEN_EX}All-in-One security scanning tool Created by -{Style.RESET_ALL} "
+    version_status = get_version_status()
+    logger.info(f"{Fore.LIGHTGREEN_EX}All-in-One Security Scanner Created by - {Style.RESET_ALL}"
                 f"\033]8;;https://github.com/1hehaq\033\\{Fore.LIGHTRED_EX}@1hehaq\033]8;;\033\\ {Style.RESET_ALL}")
+    logger.info("")
+    logger.info(f"{Fore.CYAN}Using config file:{Style.RESET_ALL} {Fore.LIGHTGREEN_EX}{config_path}{Style.RESET_ALL}")
+    logger.info(f"{Fore.CYAN}Current alltools version:{Style.RESET_ALL} {Fore.LIGHTGREEN_EX}{CURRENT_VERSION}{Style.RESET_ALL} ({version_status})")
+    logger.info("")
 
     tip = random.choice(TIPS)
     wrapped_tip = textwrap.wrap(tip, width=60)
@@ -299,12 +316,9 @@ def print_banner():
     logger.info(f"{Fore.YELLOW}┌─ Tip of the Day {'─' * (max_length - 15)}┐{Style.RESET_ALL}")
     for line in wrapped_tip:
         logger.info(f"{Fore.YELLOW}│ {Fore.CYAN}{line:<{max_length}} {Fore.YELLOW}│{Style.RESET_ALL}")
-    logger.info(f"{Fore.YELLOW}└{'─' * (max_length + 2)}┘{Style.RESET_ALL}")
+    logger.info(f"{Fore.YELLOW}└{'─' * (max_length + 2)}┘{Style.RESET_ALL}\n")
 
-    version_status = get_version_status()
-    logger.info(f"{Fore.CYAN}Current alltools version: {CURRENT_VERSION} ({version_status}){Style.RESET_ALL}")
-    logger.info(f"{Fore.CYAN}Using config file: {config_path}{Style.RESET_ALL}")
-    logger.info("")
+
 
 def print_completion_banner(results):
     logger.info(f"{Fore.YELLOW}Summary of findings:{Style.RESET_ALL}")
@@ -364,6 +378,7 @@ class SecurityScanner:
     def __init__(self, config_file: str = 'config.json'):
         self.config = self.load_config(config_file)
         self.results: Dict[str, Any] = {}
+        self.stop_scan = stop_scan  # Add reference to the global stop_scan event
 
     def load_config(self, config_file: str) -> Dict[str, Any]:
         try:
@@ -384,208 +399,302 @@ class SecurityScanner:
             if not isinstance(config[key], dict):
                 raise ConfigurationError(f"Invalid configuration for '{key}'. Expected a dictionary.")
 
-    def run_command(self, command: List[str], silent: bool = False) -> str:
+    def run_command(self, command: List[str], silent: bool = False, timeout: int = 300) -> str:
         try:
-            if silent:
-                result = subprocess.run(command, capture_output=True, text=True, check=True)
-            else:
-                result = subprocess.run(command, text=True, check=True)
+            if not shutil.which(command[0]):
+                raise ToolExecutionError(f"Tool '{command[0]}' not found. Please install it or add it to your PATH.")
+            
+            result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=timeout)
             return result.stdout
         except subprocess.CalledProcessError as e:
-            raise ToolExecutionError(f"Error running command {' '.join(command)}: {e}")
+            error_msg = f"Error running command {' '.join(command)}: {e}"
+            if not silent:
+                logger.error(error_msg)
+            raise ToolExecutionError(error_msg)
+        except subprocess.TimeoutExpired:
+            error_msg = f"Command {' '.join(command)} timed out after {timeout} seconds"
+            if not silent:
+                logger.error(error_msg)
+            raise ToolExecutionError(error_msg)
 
     def run_tool(self, tool, command, target):
+        if self.stop_scan.is_set():
+            return tool, target, set(), "interrupted", "Scan interrupted by user"
+        
         try:
             if tool == "oneliners":
                 formatted_command = command.format(target=target)
                 output = subprocess.run(formatted_command, shell=True, capture_output=True, text=True, check=True)
             else:
                 if not shutil.which(command[0]):
-                    raise ToolExecutionError(f"Tool '{command[0]}' not found. Please install it or add it to your PATH.")
+                    return tool, target, set(), "error", f"Tool '{command[0]}' not found. Please install it or add it to your PATH."
 
                 formatted_command = [arg.format(target=target) for arg in command]
                 output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
 
-            # Use regex to extract valid subdomains
             subdomain_pattern = re.compile(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}')
             subdomains = set(subdomain_pattern.findall(output.stdout))
-
-            # Filter subdomains to include only those related to the target domain
             target_subdomains = {subdomain for subdomain in subdomains if subdomain.endswith(target)}
 
-            return tool, target, target_subdomains, None
+            if not target_subdomains:
+                return tool, target, set(), "not_found", "No subdomains found."
+
+            return tool, target, target_subdomains, "success", None
         except subprocess.CalledProcessError as e:
             error_msg = f"Command '{formatted_command if isinstance(formatted_command, str) else ' '.join(formatted_command)}' returned non-zero exit status {e.returncode}."
-            return tool, target, set(), error_msg
+            return tool, target, set(), "error", error_msg
 
     def subdomain_enumeration(self, targets: List[str], args: argparse.Namespace) -> None:
-        spinner.start(f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}")
+        spinner = Halo(text=f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}", spinner="dots")
+        spinner.start()
         all_subdomains = set()
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = []
-            for target in targets:
-                for tool, command in self.config['subdomain_enum'].items():
-                    if args.exclude and tool in args.exclude:
-                        continue
-                    if tool == "oneliners":
-                        for oneliner in command:
-                            futures.append(executor.submit(self.run_tool, "oneliners", oneliner, target))
+        try:
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for target in targets:
+                    for tool, command in self.config['subdomain_enum'].items():
+                        if args.exclude and tool in args.exclude:
+                            continue
+                        if tool == "oneliners":
+                            for oneliner in command:
+                                futures.append(executor.submit(self.run_tool, "oneliners", oneliner, target))
+                        else:
+                            futures.append(executor.submit(self.run_tool, tool, command, target))
+
+                for future in as_completed(futures):
+                    if self.stop_scan.is_set():
+                        break
+
+                    tool, target, subdomains, status, message = future.result()
+                    spinner.stop()
+
+                    if status == "error":
+                        logger.error(f"{Fore.LIGHTRED_EX}✖ Error running {tool} for {target}: {message}{Style.RESET_ALL}")
+                    elif status == "not_found":
+                        logger.warning(f"{Fore.YELLOW}⚠{Style.RESET_ALL} {Fore.CYAN}{tool} found no subdomains for {target}{Style.RESET_ALL}")
+                    elif status == "interrupted":
+                        logger.info(f"{Fore.LIGHTYELLOW_EX}Scan interrupted: {tool} for {target}{Style.RESET_ALL}")
+                        break
                     else:
-                        futures.append(executor.submit(self.run_tool, tool, command, target))
+                        all_subdomains.update(subdomains)
+                        logger.info(f"{Fore.LIGHTGREEN_EX}✓{Style.RESET_ALL} {Fore.LIGHTCYAN_EX}{tool} found {len(subdomains)} subdomains for {target}{Style.RESET_ALL}")
+                        for subdomain in sorted(subdomains):
+                            logger.info(f"  {Fore.LIGHTYELLOW_EX}{subdomain}{Style.RESET_ALL}")
+                
+                    spinner.text = f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}"
+                    spinner.start()
 
-            for future in as_completed(futures):
-                tool, target, subdomains, error = future.result()
-                if error:
-                    spinner.fail(f"{Fore.LIGHTRED_EX}Error running {tool} for {target}: {error}{Style.RESET_ALL}")
-                    continue
-                
-                all_subdomains.update(subdomains)
-                
-                spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(subdomains)} subdomains for {target}{Style.RESET_ALL}")
-                for subdomain in sorted(subdomains):
-                    logger.info(f"  {Fore.LIGHTYELLOW_EX}{subdomain}{Style.RESET_ALL}")
-                
-                spinner.start(f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}")
+        except KeyboardInterrupt:
+            pass
+        finally:
+            spinner.stop()
+            if self.stop_scan.is_set():
+                return
 
-        spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total unique subdomains found: {len(all_subdomains)}{Style.RESET_ALL}")
+        if self.stop_scan.is_set():
+            logger.info(f"{Fore.YELLOW}Subdomain enumeration interrupted by user{Style.RESET_ALL}")
+        elif all_subdomains:
+            logger.info(f"{Fore.LIGHTGREEN_EX}Total unique subdomains found: {len(all_subdomains)}{Style.RESET_ALL}")
+        else:
+            logger.warning(f"{Fore.LIGHTYELLOW_EX}No subdomains found for any targets{Style.RESET_ALL}")
+
         self.results['subdomains'] = list(all_subdomains)
 
         if args.output:
             with open(args.output, 'w') as f:
                 for subdomain in sorted(all_subdomains):
                     f.write(f"{subdomain}\n")
-            logger.info(f"{self.get_timestamp()} Subdomains saved to {args.output}")
+            logger.info(f"Subdomains saved to {args.output}")
         logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
-        spinner.succeed(f"{Fore.GREEN}Subdomain Enumeration Complete{Style.RESET_ALL}")
+        logger.info(f"{Fore.GREEN}Subdomain Enumeration Complete{Style.RESET_ALL}")
 
     def get_timestamp(self) -> str:
         return f"{Fore.LIGHTMAGENTA_EX}[{time.strftime('%H:%M:%S')}]{Style.RESET_ALL}"
 
     def port_scanning(self, targets: List[str], args: argparse.Namespace) -> None:
-        logger.info(f"{Fore.CYAN}Performing Port Scanning{Style.RESET_ALL}")
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting port scanning...{Style.RESET_ALL}")
-        open_ports = {}
+        spinner = Halo(text=f"{Fore.CYAN}Performing Port Scanning{Style.RESET_ALL}", spinner="dots")
+        spinner.start()
+        all_open_ports = {}
 
-        for target in targets:
-            open_ports[target] = []
-            for tool, command in self.config['port_scan'].items():
-                if args.exclude and tool in args.exclude:
-                    continue
-                logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}Running {tool} for {target}{Style.RESET_ALL}")
-                
-                spinner.start(f"Running {tool}")
-                formatted_command = [arg.format(target=target) for arg in command]
-                output = self.run_command(formatted_command, silent=True)
-                spinner.stop()
-                
-                ports = self.parse_port_scan_output(tool, output)
-                open_ports[target].extend(ports)
-                
-                logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(ports)} open ports for {target}{Style.RESET_ALL}")
-                for port in ports:
-                    logger.info(f"  {Fore.LIGHTYELLOW_EX}{port}{Style.RESET_ALL}")
+        try:
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for target in targets:
+                    for tool, command in self.config['port_scan'].items():
+                        if args.exclude and tool in args.exclude:
+                            continue
+                        futures.append(executor.submit(self.run_tool, tool, command, target))
 
-        self.results['open_ports'] = open_ports
+                for future in as_completed(futures):
+                    if self.stop_scan.is_set():
+                        break
+
+                    tool, target, open_ports, status, message = future.result()
+                    spinner.stop()
+
+                    if status == "error":
+                        logger.error(f"{Fore.LIGHTRED_EX}✖ Error running {tool} for {target}: {message}{Style.RESET_ALL}")
+                    elif status == "not_found":
+                        logger.warning(f"{Fore.YELLOW}⚠{Style.RESET_ALL} {Fore.CYAN}{tool} found no open ports for {target}{Style.RESET_ALL}")
+                    elif status == "interrupted":
+                        logger.info(f"{Fore.LIGHTYELLOW_EX}Scan interrupted: {tool} for {target}{Style.RESET_ALL}")
+                        break
+                    else:
+                        if target not in all_open_ports:
+                            all_open_ports[target] = set()
+                        all_open_ports[target].update(open_ports)
+                        logger.info(f"{Fore.LIGHTGREEN_EX}✓{Style.RESET_ALL} {Fore.LIGHTCYAN_EX}{tool} found {len(open_ports)} open ports for {target}{Style.RESET_ALL}")
+                        for port in sorted(open_ports):
+                            logger.info(f"  {Fore.LIGHTYELLOW_EX}Port {port}{Style.RESET_ALL}")
+                
+                    spinner.text = f"{Fore.CYAN}Performing Port Scanning{Style.RESET_ALL}"
+                    spinner.start()
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            spinner.stop()
+            if self.stop_scan.is_set():
+                return
+
+        if self.stop_scan.is_set():
+            logger.info(f"{Fore.YELLOW}Port scanning interrupted by user{Style.RESET_ALL}")
+        elif all_open_ports:
+            logger.info(f"{Fore.LIGHTGREEN_EX}Total targets scanned: {len(all_open_ports)}{Style.RESET_ALL}")
+            for target, ports in all_open_ports.items():
+                logger.info(f"{Fore.LIGHTCYAN_EX}{target}: {len(ports)} open ports{Style.RESET_ALL}")
+        else:
+            logger.warning(f"{Fore.LIGHTYELLOW_EX}No open ports found for any targets{Style.RESET_ALL}")
+
+        self.results['open_ports'] = all_open_ports
 
         if args.output:
             with open(args.output, 'w') as f:
-                for target, ports in open_ports.items():
-                    f.write(f"{target}:\n")
-                    for port in ports:
-                        f.write(f"  {port}\n")
-            logger.info(f"{self.get_timestamp()} Open ports saved to {args.output}")
-
+                json.dump(all_open_ports, f, indent=2)
+            logger.info(f"Open ports saved to {args.output}")
+        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
         logger.info(f"{Fore.GREEN}Port Scanning Complete{Style.RESET_ALL}")
 
-    def parse_port_scan_output(self, tool: str, output: str) -> List[int]:
-        # Implement parsing logic for different tools
-        # This is a simplified example
-        ports = []
-        for line in output.splitlines():
-            if 'open' in line.lower():
-                port = re.search(r'\d+', line)
-                if port:
-                    ports.append(int(port.group()))
-        return ports
-
     def probe_alive_domains(self, targets: List[str], args: argparse.Namespace) -> None:
-        logger.info(f"{Fore.CYAN}Probing for Alive Domains{Style.RESET_ALL}")
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Probing for alive domains...{Style.RESET_ALL}")
+        spinner = Halo(text=f"{Fore.CYAN}Probing for alive domains{Style.RESET_ALL}", spinner="dots")
+        spinner.start()
         alive_domains = set()
 
-        for tool, command in self.config['probe'].items():
-            if args.exclude and tool in args.exclude:
-                continue
-            logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}Running {tool}{Style.RESET_ALL}")
-            
-            spinner.start(f"Running {tool}")
-            formatted_command = command + targets
-            output = self.run_command(formatted_command, silent=True)
-            spinner.stop()
-            
-            domains = set(line.strip() for line in output.splitlines() if line.strip())
-            alive_domains.update(domains)
-            
-            logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(domains)} alive domains{Style.RESET_ALL}")
-            for domain in domains:
-                logger.info(f"  {Fore.LIGHTYELLOW_EX}{domain}{Style.RESET_ALL}")
+        try:
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for tool, command in self.config['probe'].items():
+                    if args.exclude and tool in args.exclude:
+                        continue
+                    futures.append(executor.submit(self.run_tool, tool, command, targets))
 
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total alive domains found: {len(alive_domains)}{Style.RESET_ALL}")
+                for future in as_completed(futures):
+                    if self.stop_scan.is_set():
+                        break
+
+                    tool, _, domains, status, message = future.result()
+                    spinner.stop()
+
+                    if status == "error":
+                        logger.error(f"{Fore.LIGHTRED_EX}✖ Error running {tool}: {message}{Style.RESET_ALL}")
+                    elif status == "not_found":
+                        logger.warning(f"{Fore.YELLOW}⚠{Style.RESET_ALL} {Fore.CYAN}{tool} found no alive domains{Style.RESET_ALL}")
+                    elif status == "interrupted":
+                        logger.info(f"{Fore.LIGHTYELLOW_EX}Scan interrupted: {tool}{Style.RESET_ALL}")
+                        break
+                    else:
+                        alive_domains.update(domains)
+                        logger.info(f"{Fore.LIGHTGREEN_EX}✓{Style.RESET_ALL} {Fore.LIGHTCYAN_EX}{tool} found {len(domains)} alive domains{Style.RESET_ALL}")
+                        for domain in sorted(domains):
+                            logger.info(f"  {Fore.LIGHTYELLOW_EX}{domain}{Style.RESET_ALL}")
+                
+                    spinner.text = f"{Fore.CYAN}Probing for alive domains{Style.RESET_ALL}"
+                    spinner.start()
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            spinner.stop()
+            if self.stop_scan.is_set():
+                return
+
+        if self.stop_scan.is_set():
+            logger.info(f"{Fore.YELLOW}Probing interrupted by user{Style.RESET_ALL}")
+        elif alive_domains:
+            logger.info(f"{Fore.LIGHTGREEN_EX}Total alive domains found: {len(alive_domains)}{Style.RESET_ALL}")
+        else:
+            logger.warning(f"{Fore.LIGHTYELLOW_EX}No alive domains found{Style.RESET_ALL}")
+
         self.results['alive_domains'] = list(alive_domains)
 
         if args.output:
             with open(args.output, 'w') as f:
-                for domain in alive_domains:
+                for domain in sorted(alive_domains):
                     f.write(f"{domain}\n")
-            logger.info(f"{self.get_timestamp()} Alive domains saved to {args.output}")
-
+            logger.info(f"Alive domains saved to {args.output}")
+        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
         logger.info(f"{Fore.GREEN}Probing Complete{Style.RESET_ALL}")
 
     def vulnerability_scanning(self, targets: List[str], args: argparse.Namespace) -> None:
-        spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting vulnerability scanning...{Style.RESET_ALL}")
-        vulnerabilities = {}
+        spinner = Halo(text=f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}", spinner="dots")
+        spinner.start()
+        vulnerabilities = []
 
-        vuln_types = args.type if args.type else ['all']
-        if 'all' in vuln_types:
-            vuln_types = list(self.config['vuln_scan'].keys())
-
-        for target in targets:
-            vulnerabilities[target] = {}
-            for vuln_type in vuln_types:
-                if vuln_type not in self.config['vuln_scan']:
-                    logger.warning(f"{self.get_timestamp()} {Fore.LIGHTYELLOW_EX}Unknown vulnerability type: {vuln_type}{Style.RESET_ALL}")
-                    continue
-
-                spinner.text = f"Scanning for {vuln_type} vulnerabilities on {target}"
-                for tool, command in self.config['vuln_scan'][vuln_type].items():
+        try:
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for tool, command in self.config['vuln_scan'].items():
                     if args.exclude and tool in args.exclude:
                         continue
-                    if args.tool and tool not in args.tool:
-                        continue
-                    spinner.text = f"Running {tool} for {vuln_type} on {target}"
-                    formatted_command = [arg.format(target=target) for arg in command]
-                    output = self.run_command(formatted_command, silent=True)
-                    vulns = self.parse_vulnerability_output(tool, output)
-                    vulnerabilities[target][vuln_type] = vulns
-                    
-                    spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(vulns)} {vuln_type} vulnerabilities on {target}{Style.RESET_ALL}")
-                    for vuln in vulns:
-                        logger.info(f"  {Fore.LIGHTYELLOW_EX}{vuln['description']}{Style.RESET_ALL}")
-                    spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
+                    for target in targets:
+                        futures.append(executor.submit(self.run_tool, tool, command, target))
 
-                if args.isolate:
-                    break
+                for future in as_completed(futures):
+                    if self.stop_scan.is_set():
+                        break
+
+                    tool, target, vulns, status, message = future.result()
+                    spinner.stop()
+
+                    if status == "error":
+                        logger.error(f"{Fore.LIGHTRED_EX}✖ Error running {tool} for {target}: {message}{Style.RESET_ALL}")
+                    elif status == "not_found":
+                        logger.warning(f"{Fore.YELLOW}⚠{Style.RESET_ALL} {Fore.CYAN}{tool} found no vulnerabilities for {target}{Style.RESET_ALL}")
+                    elif status == "interrupted":
+                        logger.info(f"{Fore.LIGHTYELLOW_EX}Scan interrupted: {tool} for {target}{Style.RESET_ALL}")
+                        break
+                    else:
+                        vulnerabilities.extend(vulns)
+                        logger.info(f"{Fore.LIGHTGREEN_EX}✓{Style.RESET_ALL} {Fore.LIGHTCYAN_EX}{tool} found {len(vulns)} vulnerabilities for {target}{Style.RESET_ALL}")
+                        for vuln in vulns:
+                            logger.info(f"  {Fore.LIGHTYELLOW_EX}{vuln['type']} - {vuln['description']}{Style.RESET_ALL}")
+                
+                    spinner.text = f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}"
+                    spinner.start()
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            spinner.stop()
+            if self.stop_scan.is_set():
+                return
+
+        if self.stop_scan.is_set():
+            logger.info(f"{Fore.YELLOW}Vulnerability scanning interrupted by user{Style.RESET_ALL}")
+        elif vulnerabilities:
+            logger.info(f"{Fore.LIGHTGREEN_EX}Total vulnerabilities found: {len(vulnerabilities)}{Style.RESET_ALL}")
+        else:
+            logger.warning(f"{Fore.LIGHTYELLOW_EX}No vulnerabilities found for any targets{Style.RESET_ALL}")
 
         self.results['vulnerabilities'] = vulnerabilities
 
         if args.output:
             with open(args.output, 'w') as f:
                 json.dump(vulnerabilities, f, indent=2)
-            logger.info(f"{self.get_timestamp()} Vulnerabilities saved to {args.output}")
-
-        spinner.succeed(f"{Fore.GREEN}Vulnerability Scanning Complete{Style.RESET_ALL}")
+            logger.info(f"Vulnerabilities saved to {args.output}")
+        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
+        logger.info(f"{Fore.GREEN}Vulnerability Scanning Complete{Style.RESET_ALL}")
 
     def parse_vulnerability_output(self, tool: str, output: str) -> List[Dict[str, str]]:
         # Implement parsing logic for different vulnerability scanning tools
@@ -602,47 +711,22 @@ class SecurityScanner:
         return vulnerabilities
 
     async def crawler(self, targets: List[str], args: argparse.Namespace) -> None:
-        spinner.start(f"{Fore.CYAN}Performing Web Crawling and Directory Enumeration{Style.RESET_ALL}")
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting web crawling and directory enumeration...{Style.RESET_ALL}")
-        crawl_results = {}
+        spinner = Halo(text=f"{Fore.CYAN}Performing Web Crawling{Style.RESET_ALL}", spinner="dots")
+        spinner.start()
+        logger.info(f"{self.get_timestamp()} Starting web crawling...")
 
-        crawler = Crawler(
-            config=self.config,
-            max_depth=args.depth,
-            max_urls=args.max_urls,
-            respect_robots=args.respect_robots,
-            custom_headers=args.headers,
-            file_extensions=set(args.extensions) if args.extensions else None,
-            follow_subdomains=args.follow_subdomains
-        )
+        results = []
+        async with aiohttp.ClientSession() as session:
+            for target in targets:
+                crawler = Crawler(self.config, args.depth, args.max_urls, args.respect_robots, 
+                                  args.headers, args.extensions, args.follow_subdomains)
+                crawl_results = await crawler.crawl(target, session)
+                results.extend(crawl_results)
 
-        for target in targets:
-            spinner.text = f"Crawling {target}"
-            try:
-                result = await crawler.crawl(target)
-                crawl_results[target] = result
-
-                spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}Crawl completed for {target}{Style.RESET_ALL}")
-                logger.info(f"  {Fore.LIGHTYELLOW_EX}Discovered URLs: {len(result['urls'])}{Style.RESET_ALL}")
-                logger.info(f"  {Fore.LIGHTYELLOW_EX}Discovered Directories: {len(result['directories'])}{Style.RESET_ALL}")
-                logger.info(f"  {Fore.LIGHTYELLOW_EX}Discovered Files: {sum(len(files) for files in result['files'].values())}{Style.RESET_ALL}")
-
-                # Display a sample of results
-                self.display_sample_results(result)
-
-            except Exception as e:
-                spinner.fail(f"{self.get_timestamp()} {Fore.LIGHTRED_EX}Error crawling {target}: {str(e)}{Style.RESET_ALL}")
-
-            spinner.start(f"{Fore.CYAN}Performing Web Crawling and Directory Enumeration{Style.RESET_ALL}")
-
-        self.results['crawler'] = crawl_results
-
+        spinner.succeed(f"{Fore.GREEN}Web crawling completed{Style.RESET_ALL}")
+        self.results['crawler'] = results
         if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(crawl_results, f, indent=2, default=list)
-            logger.info(f"{self.get_timestamp()} Crawl results saved to {args.output}")
-
-        spinner.succeed(f"{Fore.GREEN}Web Crawling and Directory Enumeration Complete{Style.RESET_ALL}")
+            self.save_results(args.output, results)
 
     def display_sample_results(self, result: Dict[str, Any], sample_size: int = 5):
         logger.info(f"  {Fore.LIGHTYELLOW_EX}Sample URLs:{Style.RESET_ALL}")
@@ -660,39 +744,30 @@ class SecurityScanner:
                 logger.info(f"      {Fore.LIGHTYELLOW_EX}{file}{Style.RESET_ALL}")
 
     async def paramfuzz(self, targets: List[str], args: argparse.Namespace) -> None:
-        spinner.start(f"{Fore.CYAN}Performing Parameter Fuzzing{Style.RESET_ALL}")
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting parameter fuzzing...{Style.RESET_ALL}")
-        fuzz_results = {}
+        spinner = Halo(text=f"{Fore.CYAN}Performing Parameter Fuzzing{Style.RESET_ALL}", spinner="dots")
+        spinner.start()
+        logger.info(f"{self.get_timestamp()} Starting parameter fuzzing...")
 
-        for target in targets:
-            fuzz_results[target] = {}
-            spinner.text = f"Fuzzing parameters for {target}"
-            
-            for tool, command in self.config['paramfuzz'].items():
-                if args.exclude and tool in args.exclude:
-                    continue
-                if args.tool and tool not in args.tool:
-                    continue
+        wordlist = self.load_wordlist(args.wordlist)
+        results = []
 
-                spinner.text = f"Running {tool} for {target}"
-                formatted_command = [arg.format(target=target) for arg in command]
-                output = self.run_command(formatted_command, silent=True)
-                
-                params = self.parse_paramfuzz_output(tool, output, target)
-                fuzz_results[target][tool] = params
-                
-                spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(params)} parameters for {target}{Style.RESET_ALL}")
-                self.display_sample_params(params)
-                spinner.start(f"{Fore.CYAN}Performing Parameter Fuzzing{Style.RESET_ALL}")
+        async with aiohttp.ClientSession() as session:
+            for target in targets:
+                chunks = [wordlist[i:i+args.chunks] for i in range(0, len(wordlist), args.chunks)]
+                for chunk in chunks:
+                    tasks = []
+                    for param in chunk:
+                        url = f"{target}?{param}=FUZZ"
+                        task = asyncio.create_task(self.fuzz_request(session, url, args))
+                        tasks.append(task)
+                    chunk_results = await asyncio.gather(*tasks)
+                    results.extend(chunk_results)
+                    await asyncio.sleep(args.delay)
 
-        self.results['paramfuzz'] = fuzz_results
-
+        spinner.succeed(f"{Fore.GREEN}Parameter fuzzing completed{Style.RESET_ALL}")
+        self.results['paramfuzz'] = results
         if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(fuzz_results, f, indent=2)
-            logger.info(f"{self.get_timestamp()} Parameter fuzzing results saved to {args.output}")
-
-        spinner.succeed(f"{Fore.GREEN}Parameter Fuzzing Complete{Style.RESET_ALL}")
+            self.save_results(args.output, results)
 
     def parse_paramfuzz_output(self, tool: str, output: str, target: str) -> List[Dict[str, Any]]:
         params = []
@@ -733,6 +808,25 @@ class SecurityScanner:
         if len(params) > sample_size:
             logger.info(f"    {Fore.LIGHTYELLOW_EX}... and {len(params) - sample_size} more{Style.RESET_ALL}")
 
+    async def jsscrap(self, targets: List[str], args: argparse.Namespace) -> None:
+        spinner = Halo(text=f"{Fore.CYAN}Performing JavaScript Scraping{Style.RESET_ALL}", spinner="dots")
+        spinner.start()
+        logger.info(f"{self.get_timestamp()} Starting JavaScript scraping...")
+
+        config = self.load_jsscrap_config(args.config_path)
+        results = []
+
+        async with aiohttp.ClientSession() as session:
+            for target in targets:
+                js_scraper = JsScraper(config, args.concurrency, args.delay)
+                scrap_results = await js_scraper.scrap(target, session)
+                results.extend(scrap_results)
+
+        spinner.succeed(f"{Fore.GREEN}JavaScript scraping completed{Style.RESET_ALL}")
+        self.results['jsscrap'] = results
+        if args.output:
+            self.save_results(args.output, results)
+
 def check_for_updates():
     spinner = Halo(text='Checking for updates...', spinner='dots')
     spinner.start()
@@ -754,11 +848,12 @@ def get_version_status():
         response = requests.get('https://api.github.com/repos/1hehaq/alltools/releases/latest')
         latest_version = response.json()['tag_name']
         if version.parse(latest_version) > version.parse(CURRENT_VERSION):
-            return "oldest"
+            return f"{Fore.RED}oldest{Style.RESET_ALL}"
         else:
-            return "latest"
+            return f"{Fore.GREEN}latest{Style.RESET_ALL}"
+
     except:
-        return "unknown"
+        return f"{Fore.YELLOW}unknown{Style.RESET_ALL}"
 
 def list_tools(config):
     print(f"\n{Fore.CYAN}Available tools for each task:{Style.RESET_ALL}")
@@ -800,6 +895,9 @@ def main():
     args = parser.parse_args()
 
     print_banner()
+
+    # Register the signal handler
+    signal.signal(signal.SIGINT, signal_handler)
 
     if args.update:
         check_for_updates()
@@ -853,17 +951,16 @@ def main():
         elif args.command == 'paramfuzz':
             asyncio.run(scanner.paramfuzz(targets, args))
             scan_performed = True
+        elif args.command == 'jsscrap':
+            asyncio.run(scanner.jsscrap(targets, args))
+            scan_performed = True
 
-        if scan_performed:
+        if scan_performed and not stop_scan.is_set():
             print_completion_banner(scanner.results)
 
     except AllToolsError as e:
         logger.error(f"{Fore.RED}{type(e).__name__}: {str(e)}{Style.RESET_ALL}")
-    except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Scan interrupted by user. Exiting...{Style.RESET_ALL}")
     except Exception as e:
-        logger.error(f"{Fore.RED}An unexpected error occurred: {str(e)}{Style.RESET_ALL}")
-        logger.debug("", exc_info=True)
         logger.error(f"{Fore.RED}An unexpected error occurred: {str(e)}{Style.RESET_ALL}")
         logger.debug("", exc_info=True)
 
