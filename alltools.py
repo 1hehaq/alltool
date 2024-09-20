@@ -18,8 +18,10 @@ import random
 import sys
 import traceback
 
+# Initialize colorama for cross-platform color support
 init(autoreset=True)
 
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
@@ -36,9 +38,11 @@ class ColoredFormatter(logging.Formatter):
         log_message = super().format(record)
         return f"{self.COLORS.get(record.levelname, '')}{log_message}{Style.RESET_ALL}"
 
+# Remove all handlers associated with the root logger object
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
 
+# Add our custom handler
 handler = logging.StreamHandler()
 handler.setFormatter(ColoredFormatter('%(message)s'))
 logger.addHandler(handler)
@@ -94,25 +98,25 @@ def create_parser():
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # Subdomain enumeration
+    # Subdomain enumeration parser
     subenum_parser = subparsers.add_parser('subenum', help=f'{Fore.YELLOW}Perform subdomain enumeration{Style.RESET_ALL}')
     subenum_parser.add_argument('--target', required=True, help=f'{Fore.LIGHTCYAN_EX}Target domain or file with list of targets{Style.RESET_ALL}')
     subenum_parser.add_argument('--output', help=f'{Fore.LIGHTCYAN_EX}Output file for results{Style.RESET_ALL}')
     subenum_parser.add_argument('--exclude', nargs='+', help=f'{Fore.LIGHTCYAN_EX}Tools to exclude{Style.RESET_ALL}')
 
-    # Port scanning
+    # Port scanning parser
     portscan_parser = subparsers.add_parser('portscan', help=f'{Fore.YELLOW}Perform port scanning{Style.RESET_ALL}')
     portscan_parser.add_argument('--target', required=True, help=f'{Fore.LIGHTCYAN_EX}Target domain or file with list of targets{Style.RESET_ALL}')
     portscan_parser.add_argument('--output', help=f'{Fore.LIGHTCYAN_EX}Output file for results{Style.RESET_ALL}')
     portscan_parser.add_argument('--exclude', nargs='+', help=f'{Fore.LIGHTCYAN_EX}Tools to exclude{Style.RESET_ALL}')
 
-    # Probing
+    # Probe parser
     probe_parser = subparsers.add_parser('probe', help=f'{Fore.YELLOW}Probe for alive domains{Style.RESET_ALL}')
     probe_parser.add_argument('--target', required=True, help=f'{Fore.LIGHTCYAN_EX}Target domain or file with list of targets{Style.RESET_ALL}')
     probe_parser.add_argument('--output', help=f'{Fore.LIGHTCYAN_EX}Output file for results{Style.RESET_ALL}')
     probe_parser.add_argument('--exclude', nargs='+', help=f'{Fore.LIGHTCYAN_EX}Tools to exclude{Style.RESET_ALL}')
 
-    # Vulnerability scanning
+    # Vulnerability scanning parser
     vulnscan_parser = subparsers.add_parser('vulnscan', help=f'{Fore.YELLOW}Perform vulnerability scanning{Style.RESET_ALL}')
     vulnscan_parser.add_argument('--target', required=True, help=f'{Fore.LIGHTCYAN_EX}Target domain or file with list of targets{Style.RESET_ALL}')
     vulnscan_parser.add_argument('--type', nargs='+', help=f'{Fore.LIGHTCYAN_EX}Types of vulnerabilities to scan for{Style.RESET_ALL}')
@@ -158,7 +162,7 @@ def print_completion_banner(results):
                 logger.info(f"  {Fore.LIGHTCYAN_EX}{subkey}: {Fore.WHITE}{len(subvalue) if isinstance(subvalue, list) else subvalue} found")
     logger.info(f"\n{Fore.YELLOW}Detailed results are stored in the 'results' attribute of the scanner object.{Style.RESET_ALL}")
 
-
+# Custom Exceptions
 class AllToolsError(Exception):
     """Base exception for AllTools"""
     pass
@@ -175,7 +179,7 @@ class InputError(AllToolsError):
     """Raised when there's an issue with user input"""
     pass
 
-
+# Global Error Handler
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -200,7 +204,7 @@ class NonInterferenceSpinner(Halo):
 
 spinner = NonInterferenceSpinner(spinner='dots')
 
-
+# Enhance the SecurityScanner class
 class SecurityScanner:
     def __init__(self, config_file: str = 'config.json'):
         self.config = self.load_config(config_file)
@@ -245,11 +249,11 @@ class SecurityScanner:
                 formatted_command = [arg.format(target=target) for arg in command]
                 output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
 
-            # regex to extract subdomains
+            # Use regex to extract valid subdomains
             subdomain_pattern = re.compile(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}')
             subdomains = set(subdomain_pattern.findall(output.stdout))
 
-            # Filter subdomains related to the target domain
+            # Filter subdomains to include only those related to the target domain
             target_subdomains = {subdomain for subdomain in subdomains if subdomain.endswith(target)}
 
             return tool, target, target_subdomains, None
@@ -346,7 +350,7 @@ class SecurityScanner:
             formatted_command = [arg.format(target=target) for arg in command]
             output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
             
-            
+            # Parse the output to extract open ports (this will depend on the tool used)
             open_ports = self.parse_port_scan_output(tool, output.stdout)
             
             return tool, target, open_ports, None
@@ -355,7 +359,8 @@ class SecurityScanner:
             return tool, target, set(), error_msg
 
     def parse_port_scan_output(self, tool, output):
-        
+        # Implement parsing logic for different port scanning tools
+        # This is a simplified example and may need to be adapted for each tool
         open_ports = set()
         for line in output.splitlines():
             if 'open' in line.lower():
@@ -406,7 +411,7 @@ class SecurityScanner:
             formatted_command = command + targets
             output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
             
-            # extract alive domains
+            # Parse the output to extract alive domains
             alive_domains = set(line.strip() for line in output.stdout.splitlines() if line.strip())
             
             return tool, alive_domains, None
@@ -472,7 +477,7 @@ class SecurityScanner:
             formatted_command = [arg.format(target=target) for arg in command]
             output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
             
-            # extract vulnerabilities
+            # Parse the output to extract vulnerabilities
             vulnerabilities = self.parse_vulnerability_output(tool, output.stdout)
             
             return tool, target, vuln_type, vulnerabilities, None
@@ -481,7 +486,8 @@ class SecurityScanner:
             return tool, target, vuln_type, [], error_msg
 
     def parse_vulnerability_output(self, tool, output):
-        
+        # Implement parsing logic for different vulnerability scanning tools
+        # This is a simplified example and may need to be adapted for each tool
         vulnerabilities = []
         for line in output.splitlines():
             if 'vulnerability' in line.lower():
