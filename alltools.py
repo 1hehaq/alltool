@@ -109,11 +109,15 @@ class ColoredHelpFormatter(argparse.HelpFormatter):
     def _split_lines(self, text, width):
         return textwrap.wrap(text, width)
 
-CURRENT_VERSION = "v0.1"
+CURRENT_VERSION = "v2.0"
 CONFIG_FILE = "config.json"
 
 # Global variable to store the config path
-config_path = CONFIG_FILE
+config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILE)
+config_path_file = os.path.join(os.path.dirname(__file__), '.config_path')
+if os.path.exists(config_path_file):
+    with open(config_path_file, 'r') as f:
+        config_path = f.read().strip()
 
 def create_parser():
     parser = argparse.ArgumentParser(
@@ -192,7 +196,7 @@ def create_parser():
     # Probe parser
     probe_parser = subparsers.add_parser('probe', help=f'{Fore.YELLOW}Probe for alive domains{Style.RESET_ALL}', formatter_class=ColoredHelpFormatter,
                                          description=textwrap.dedent(f'''
-        {Fore.CYAN}Probe Alive Domains{Style.RESET_ALL}
+        {Fore.CYAN}Probe alive domains{Style.RESET_ALL}
         This command probes a list of domains to identify which ones are alive and responsive.
         It helps filter out inactive or non-existent domains from your target list.
         '''),
@@ -375,17 +379,15 @@ spinner = NonInterferenceSpinner(spinner='dots')
 
 # Enhance the SecurityScanner class
 class SecurityScanner:
-    def __init__(self, config_file: str = 'config.json'):
+    def __init__(self, config_file):
         self.config = self.load_config(config_file)
         self.results: Dict[str, Any] = {}
         self.stop_scan = stop_scan  # Add reference to the global stop_scan event
 
-    def load_config(self, config_file: str) -> Dict[str, Any]:
+    def load_config(self, config_file):
         try:
             with open(config_file, 'r') as f:
-                config = json.load(f)
-            self.validate_config(config)
-            return config
+                return json.load(f)
         except FileNotFoundError:
             raise ConfigurationError(f"Config file '{config_file}' not found.")
         except json.JSONDecodeError:
@@ -577,7 +579,7 @@ class SecurityScanner:
         logger.info(f"{Fore.GREEN}Port Scanning Complete{Style.RESET_ALL}")
 
     def probe_alive_domains(self, targets: List[str], args: argparse.Namespace) -> None:
-        spinner = Halo(text=f"{Fore.CYAN}Probing for alive domains{Style.RESET_ALL}", spinner="dots")
+        spinner = Halo(text=f"{Fore.CYAN}Probing for Alive Domains{Style.RESET_ALL}", spinner="dots")
         spinner.start()
         alive_domains = set()
 
@@ -888,6 +890,9 @@ def validate_config(config_file):
 def set_config_path(new_path):
     global config_path
     config_path = new_path
+    # Store the new path in a file
+    with open(os.path.join(os.path.dirname(__file__), '.config_path'), 'w') as f:
+        f.write(new_path)
     print(f"{Fore.GREEN}Configuration file path updated to: {new_path}{Style.RESET_ALL}")
 
 def main():
@@ -899,6 +904,8 @@ def main():
     # Register the signal handler
     signal.signal(signal.SIGINT, signal_handler)
 
+    global config_path
+
     if args.update:
         check_for_updates()
         return
@@ -908,9 +915,14 @@ def main():
         return
 
     if args.list_tools:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        list_tools(config)
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            list_tools(config)
+        except FileNotFoundError:
+            logger.error(f"{Fore.RED}Configuration file not found: {config_path}{Style.RESET_ALL}")
+        except json.JSONDecodeError:
+            logger.error(f"{Fore.RED}Invalid JSON in configuration file: {config_path}{Style.RESET_ALL}")
         return
 
     if args.validate:
@@ -958,6 +970,8 @@ def main():
         if scan_performed and not stop_scan.is_set():
             print_completion_banner(scanner.results)
 
+    except ConfigurationError as e:
+        logger.error(f"{Fore.RED}Configuration error: {str(e)}{Style.RESET_ALL}")
     except AllToolsError as e:
         logger.error(f"{Fore.RED}{type(e).__name__}: {str(e)}{Style.RESET_ALL}")
     except Exception as e:
