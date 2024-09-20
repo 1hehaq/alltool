@@ -109,7 +109,7 @@ class ColoredHelpFormatter(argparse.HelpFormatter):
     def _split_lines(self, text, width):
         return textwrap.wrap(text, width)
 
-CURRENT_VERSION = "v2.0"
+CURRENT_VERSION = "v0.1"
 CONFIG_FILE = "config.json"
 
 # Global variable to store the config path
