@@ -15,8 +15,8 @@
       "curl --silent https://sonar.omnisint.io/subdomains/{target} | jq -r '.[]' | sort -u",
       "curl --silent -X POST https://synapsint.com/report.php -d \"name=https%3A%2F%2F{target}\" | grep -oE '[a-zA-Z0-9._-]+\\.{target}' | sort -u",
       "curl -s \"https://crt.sh/?q=%25.{target}&output=json\" | jq -r '.[].name_value' | sed 's/\\*\\.//g' | sort -u",
-      "curl -s \"https://api.hackertarget.com/hostsearch/?q={target}\" | cut -d',' -f1 | sort -u",
-      "curl -s \"https://urlscan.io/api/v1/search/?q=domain:{target}\" | jq -r '.results[].page.domain' | sort -u"
+      "curl -s \"https://api.hackertarget.com/hostsearch/?q={target}\" | cut -d',' -f1",
+      "curl -s \"https://dns.bufferover.run/dns?q=.{target}\" | jq -r '.FDNS_A[]' | cut -d',' -f2 | sort -u"
     ]
   },
   "port_scan": {
