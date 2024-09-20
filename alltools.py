@@ -280,17 +280,16 @@ class SecurityScanner:
             for future in as_completed(futures):
                 tool, target, subdomains, error = future.result()
                 if error:
-                    spinner.fail(f"{self.get_timestamp()} {Fore.LIGHTRED_EX}Error running {tool} for {target}: {error}{Style.RESET_ALL}")
+                    spinner.fail(f"{Fore.LIGHTRED_EX}Error running {tool} for {target}: {error}{Style.RESET_ALL}")
                     continue
                 
                 all_subdomains.update(subdomains)
                 
-                if subdomains:
-                    spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(subdomains)} subdomains for {target}{Style.RESET_ALL}")
-                    for subdomain in sorted(subdomains):
-                        logger.info(f"  {Fore.LIGHTYELLOW_EX}{subdomain}{Style.RESET_ALL}")
-                else:
-                    spinner.warn(f"{self.get_timestamp()} {Fore.YELLOW}{tool} found no subdomains for {target}{Style.RESET_ALL}")
+                spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(subdomains)} subdomains for {target}{Style.RESET_ALL}")
+                for subdomain in sorted(subdomains):
+                    logger.info(f"  {Fore.LIGHTYELLOW_EX}{subdomain}{Style.RESET_ALL}")
+                
+                spinner.start(f"{Fore.CYAN}Performing Subdomain Enumeration{Style.RESET_ALL}")
 
         spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total unique subdomains found: {len(all_subdomains)}{Style.RESET_ALL}")
         self.results['subdomains'] = list(all_subdomains)
@@ -308,186 +307,132 @@ class SecurityScanner:
 
     def port_scanning(self, targets: List[str], args: argparse.Namespace) -> None:
         logger.info(f"{Fore.CYAN}Performing Port Scanning{Style.RESET_ALL}")
-        all_open_ports = {}
+        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting port scanning...{Style.RESET_ALL}")
+        open_ports = {}
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = []
-            for target in targets:
-                for tool, command in self.config['port_scan'].items():
-                    if args.exclude and tool in args.exclude:
-                        continue
-                    futures.append(executor.submit(self.run_port_scan, tool, command, target))
-
-            for future in as_completed(futures):
-                tool, target, open_ports, error = future.result()
-                if error:
-                    spinner.fail(f"{self.get_timestamp()} {Fore.LIGHTRED_EX}Error running {tool} for {target}: {error}{Style.RESET_ALL}")
+        for target in targets:
+            open_ports[target] = []
+            for tool, command in self.config['port_scan'].items():
+                if args.exclude and tool in args.exclude:
                     continue
+                logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}Running {tool} for {target}{Style.RESET_ALL}")
                 
-                if target not in all_open_ports:
-                    all_open_ports[target] = set()
-                all_open_ports[target].update(open_ports)
+                spinner.start(f"Running {tool}")
+                formatted_command = [arg.format(target=target) for arg in command]
+                output = self.run_command(formatted_command, silent=True)
+                spinner.stop()
                 
-                if open_ports:
-                    spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(open_ports)} open ports for {target}{Style.RESET_ALL}")
-                    for port in sorted(open_ports):
-                        logger.info(f"  {Fore.LIGHTYELLOW_EX}Port {port} is open{Style.RESET_ALL}")
-                else:
-                    spinner.warn(f"{self.get_timestamp()} {Fore.YELLOW}{tool} found no open ports for {target}{Style.RESET_ALL}")
+                ports = self.parse_port_scan_output(tool, output)
+                open_ports[target].extend(ports)
+                
+                logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(ports)} open ports for {target}{Style.RESET_ALL}")
+                for port in ports:
+                    logger.info(f"  {Fore.LIGHTYELLOW_EX}{port}{Style.RESET_ALL}")
 
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total targets scanned: {len(all_open_ports)}{Style.RESET_ALL}")
-        self.results['open_ports'] = all_open_ports
+        self.results['open_ports'] = open_ports
 
         if args.output:
             with open(args.output, 'w') as f:
-                json.dump(all_open_ports, f, indent=2)
-            logger.info(f"{self.get_timestamp()} Port scan results saved to {args.output}")
-        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
+                for target, ports in open_ports.items():
+                    f.write(f"{target}:\n")
+                    for port in ports:
+                        f.write(f"  {port}\n")
+            logger.info(f"{self.get_timestamp()} Open ports saved to {args.output}")
+
         logger.info(f"{Fore.GREEN}Port Scanning Complete{Style.RESET_ALL}")
 
-    def run_port_scan(self, tool, command, target):
-        try:
-            formatted_command = [arg.format(target=target) for arg in command]
-            output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
-            
-            # Parse the output to extract open ports (this will depend on the tool used)
-            open_ports = self.parse_port_scan_output(tool, output.stdout)
-            
-            return tool, target, open_ports, None
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command '{' '.join(formatted_command)}' returned non-zero exit status {e.returncode}."
-            return tool, target, set(), error_msg
-
-    def parse_port_scan_output(self, tool, output):
-        # Implement parsing logic for different port scanning tools
-        # This is a simplified example and may need to be adapted for each tool
-        open_ports = set()
+    def parse_port_scan_output(self, tool: str, output: str) -> List[int]:
+        # Implement parsing logic for different tools
+        # This is a simplified example
+        ports = []
         for line in output.splitlines():
             if 'open' in line.lower():
                 port = re.search(r'\d+', line)
                 if port:
-                    open_ports.add(int(port.group()))
-        return open_ports
+                    ports.append(int(port.group()))
+        return ports
 
     def probe_alive_domains(self, targets: List[str], args: argparse.Namespace) -> None:
         logger.info(f"{Fore.CYAN}Probing for Alive Domains{Style.RESET_ALL}")
-        all_alive_domains = set()
+        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Probing for alive domains...{Style.RESET_ALL}")
+        alive_domains = set()
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = []
-            for tool, command in self.config['probe'].items():
-                if args.exclude and tool in args.exclude:
-                    continue
-                futures.append(executor.submit(self.run_probe, tool, command, targets))
+        for tool, command in self.config['probe'].items():
+            if args.exclude and tool in args.exclude:
+                continue
+            logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}Running {tool}{Style.RESET_ALL}")
+            
+            spinner.start(f"Running {tool}")
+            formatted_command = command + targets
+            output = self.run_command(formatted_command, silent=True)
+            spinner.stop()
+            
+            domains = set(line.strip() for line in output.splitlines() if line.strip())
+            alive_domains.update(domains)
+            
+            logger.info(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(domains)} alive domains{Style.RESET_ALL}")
+            for domain in domains:
+                logger.info(f"  {Fore.LIGHTYELLOW_EX}{domain}{Style.RESET_ALL}")
 
-            for future in as_completed(futures):
-                tool, alive_domains, error = future.result()
-                if error:
-                    spinner.fail(f"{self.get_timestamp()} {Fore.LIGHTRED_EX}Error running {tool}: {error}{Style.RESET_ALL}")
-                    continue
-                
-                all_alive_domains.update(alive_domains)
-                
-                if alive_domains:
-                    spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(alive_domains)} alive domains{Style.RESET_ALL}")
-                    for domain in sorted(alive_domains):
-                        logger.info(f"  {Fore.LIGHTYELLOW_EX}{domain}{Style.RESET_ALL}")
-                else:
-                    spinner.warn(f"{self.get_timestamp()} {Fore.YELLOW}{tool} found no alive domains{Style.RESET_ALL}")
-
-        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total alive domains found: {len(all_alive_domains)}{Style.RESET_ALL}")
-        self.results['alive_domains'] = list(all_alive_domains)
+        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Total alive domains found: {len(alive_domains)}{Style.RESET_ALL}")
+        self.results['alive_domains'] = list(alive_domains)
 
         if args.output:
             with open(args.output, 'w') as f:
-                for domain in sorted(all_alive_domains):
+                for domain in alive_domains:
                     f.write(f"{domain}\n")
             logger.info(f"{self.get_timestamp()} Alive domains saved to {args.output}")
-        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
+
         logger.info(f"{Fore.GREEN}Probing Complete{Style.RESET_ALL}")
 
-    def run_probe(self, tool, command, targets):
-        try:
-            formatted_command = command + targets
-            output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
-            
-            # Parse the output to extract alive domains
-            alive_domains = set(line.strip() for line in output.stdout.splitlines() if line.strip())
-            
-            return tool, alive_domains, None
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command '{' '.join(formatted_command)}' returned non-zero exit status {e.returncode}."
-            return tool, set(), error_msg
-
     def vulnerability_scanning(self, targets: List[str], args: argparse.Namespace) -> None:
-        logger.info(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
-        all_vulnerabilities = {}
+        spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
+        logger.info(f"{self.get_timestamp()} {Fore.LIGHTGREEN_EX}Starting vulnerability scanning...{Style.RESET_ALL}")
+        vulnerabilities = {}
 
         vuln_types = args.type if args.type else ['all']
         if 'all' in vuln_types:
             vuln_types = list(self.config['vuln_scan'].keys())
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = []
-            for target in targets:
-                for vuln_type in vuln_types:
-                    if vuln_type not in self.config['vuln_scan']:
-                        logger.warning(f"{self.get_timestamp()} {Fore.LIGHTYELLOW_EX}Unknown vulnerability type: {vuln_type}{Style.RESET_ALL}")
-                        continue
-                    for tool, command in self.config['vuln_scan'][vuln_type].items():
-                        if args.exclude and tool in args.exclude:
-                            continue
-                        if args.tool and tool not in args.tool:
-                            continue
-                        futures.append(executor.submit(self.run_vuln_scan, tool, command, target, vuln_type))
-
-            for future in as_completed(futures):
-                tool, target, vuln_type, vulnerabilities, error = future.result()
-                if error:
-                    spinner.fail(f"{self.get_timestamp()} {Fore.LIGHTRED_EX}Error running {tool} for {vuln_type} on {target}: {error}{Style.RESET_ALL}")
+        for target in targets:
+            vulnerabilities[target] = {}
+            for vuln_type in vuln_types:
+                if vuln_type not in self.config['vuln_scan']:
+                    logger.warning(f"{self.get_timestamp()} {Fore.LIGHTYELLOW_EX}Unknown vulnerability type: {vuln_type}{Style.RESET_ALL}")
                     continue
-                
-                if target not in all_vulnerabilities:
-                    all_vulnerabilities[target] = {}
-                if vuln_type not in all_vulnerabilities[target]:
-                    all_vulnerabilities[target][vuln_type] = []
-                all_vulnerabilities[target][vuln_type].extend(vulnerabilities)
-                
-                if vulnerabilities:
-                    spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(vulnerabilities)} {vuln_type} vulnerabilities on {target}{Style.RESET_ALL}")
-                    for vuln in vulnerabilities:
+
+                spinner.text = f"Scanning for {vuln_type} vulnerabilities on {target}"
+                for tool, command in self.config['vuln_scan'][vuln_type].items():
+                    if args.exclude and tool in args.exclude:
+                        continue
+                    if args.tool and tool not in args.tool:
+                        continue
+                    spinner.text = f"Running {tool} for {vuln_type} on {target}"
+                    formatted_command = [arg.format(target=target) for arg in command]
+                    output = self.run_command(formatted_command, silent=True)
+                    vulns = self.parse_vulnerability_output(tool, output)
+                    vulnerabilities[target][vuln_type] = vulns
+                    
+                    spinner.succeed(f"{self.get_timestamp()} {Fore.LIGHTCYAN_EX}{tool} found {len(vulns)} {vuln_type} vulnerabilities on {target}{Style.RESET_ALL}")
+                    for vuln in vulns:
                         logger.info(f"  {Fore.LIGHTYELLOW_EX}{vuln['description']}{Style.RESET_ALL}")
-                else:
-                    spinner.warn(f"{self.get_timestamp()} {Fore.YELLOW}{tool} found no {vuln_type} vulnerabilities on {target}{Style.RESET_ALL}")
+                    spinner.start(f"{Fore.CYAN}Performing Vulnerability Scanning{Style.RESET_ALL}")
 
                 if args.isolate:
                     break
 
-        self.results['vulnerabilities'] = all_vulnerabilities
+        self.results['vulnerabilities'] = vulnerabilities
 
         if args.output:
             with open(args.output, 'w') as f:
-                json.dump(all_vulnerabilities, f, indent=2)
+                json.dump(vulnerabilities, f, indent=2)
             logger.info(f"{self.get_timestamp()} Vulnerabilities saved to {args.output}")
-        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
-        logger.info(f"{Fore.GREEN}Vulnerability Scanning Complete{Style.RESET_ALL}")
 
-    def run_vuln_scan(self, tool, command, target, vuln_type):
-        try:
-            formatted_command = [arg.format(target=target) for arg in command]
-            output = subprocess.run(formatted_command, capture_output=True, text=True, check=True)
-            
-            # Parse the output to extract vulnerabilities
-            vulnerabilities = self.parse_vulnerability_output(tool, output.stdout)
-            
-            return tool, target, vuln_type, vulnerabilities, None
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command '{' '.join(formatted_command)}' returned non-zero exit status {e.returncode}."
-            return tool, target, vuln_type, [], error_msg
+        spinner.succeed(f"{Fore.GREEN}Vulnerability Scanning Complete{Style.RESET_ALL}")
 
-    def parse_vulnerability_output(self, tool, output):
+    def parse_vulnerability_output(self, tool: str, output: str) -> List[Dict[str, str]]:
         # Implement parsing logic for different vulnerability scanning tools
-        # This is a simplified example and may need to be adapted for each tool
+        # This is a simplified example
         vulnerabilities = []
         for line in output.splitlines():
             if 'vulnerability' in line.lower():
