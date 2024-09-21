@@ -109,7 +109,7 @@ class ColoredHelpFormatter(argparse.HelpFormatter):
     def _split_lines(self, text, width):
         return textwrap.wrap(text, width)
 
-CURRENT_VERSION = "v2.0"
+CURRENT_VERSION = "v0.1"
 CONFIG_FILE = "config.json"
 
 # Global variable to store the config path
@@ -508,7 +508,7 @@ class SecurityScanner:
                 for subdomain in sorted(all_subdomains):
                     f.write(f"{subdomain}\n")
             logger.info(f"Subdomains saved to {args.output}")
-        logger.info(f"{Fore.LIGHTBLACK_EX}-----------------------------------------------------------{Style.RESET_ALL}")
+        logger.info(f"{Fore.LIGHTBLACK_EX}------------------------------{Style.RESET_ALL}")
         logger.info(f"{Fore.GREEN}Subdomain Enumeration Complete{Style.RESET_ALL}")
 
     def get_timestamp(self) -> str:
